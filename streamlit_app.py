@@ -4,7 +4,7 @@ from datetime import datetime, date
 from streamlit_gsheets import GSheetsConnection
 import google.generativeai as genai
 
-# Import untuk Fitur Upload File ke Google Drive
+# Import Pustaka Google Drive API
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 from google.oauth2.service_account import Credentials
@@ -38,7 +38,7 @@ st.markdown("""
         border-radius: 12px;
         border: 1px solid #E2E8F0;
         box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-        margin-bottom: 1rem;
+        margin-bottom: 0.5rem;
     }
     .badge-urgent {
         background-color: #FEE2E2;
@@ -71,25 +71,17 @@ st.markdown("""
         padding: 1rem;
         margin-bottom: 1rem;
     }
-    .file-link {
-        color: #2563EB;
-        font-weight: 600;
-        text-decoration: none;
-    }
-    .file-link:hover {
-        text-decoration: underline;
-    }
     </style>
 """, unsafe_allow_html=True)
 
-# 3. Inisialisasi Koneksi Google Sheets & Gemini AI
+# 3. Inisialisasi Koneksi Google Sheets & Drive
 try:
     conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception:
     conn = None
 
 def upload_to_drive(uploaded_file):
-    """Fungsi mengunggah file ke Google Drive menggunakan Service Account"""
+    """Fungsi mengunggah berkas hasil pengerjaan ke Google Drive"""
     try:
         secrets_gsheets = st.secrets.get("connections", {}).get("gsheets", {})
         if not secrets_gsheets:
@@ -112,9 +104,9 @@ def upload_to_drive(uploaded_file):
         creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
         service = build('drive', 'v3', credentials=creds)
 
-        file_metadata = {'name': uploaded_file.name}
+        file_metadata = {'name': f"[SELESAI]_{uploaded_file.name}"}
         
-        # Jika ada Folder ID khusus di secrets, masukkan file ke folder tersebut
+        # Masukkan file ke folder spesifik jika ID tersedia di Secrets
         folder_id = st.secrets.get("DRIVE_FOLDER_ID")
         if folder_id:
             file_metadata['parents'] = [folder_id]
@@ -122,12 +114,12 @@ def upload_to_drive(uploaded_file):
         media = MediaIoBaseUpload(io.BytesIO(uploaded_file.getvalue()), mimetype=uploaded_file.type, resumable=True)
         file = service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
 
-        # Atur hak akses file agar bisa dibuka oleh siapapun yang memiliki link
+        # Atur akses file agar publik dengan link
         service.permissions().create(fileId=file.get('id'), body={'type': 'anyone', 'role': 'reader'}).execute()
 
         return file.get('webViewLink')
     except Exception as e:
-        st.warning(f"Gagal mengunggah file ke Drive: {e}")
+        st.error(f"Gagal mengunggah file ke Google Drive: {e}")
         return None
 
 def load_data():
@@ -137,21 +129,16 @@ def load_data():
             df = conn.read(worksheet="Sheet1", ttl=0)
             if not df.empty and "Tugas" in df.columns:
                 df["Deadline"] = pd.to_datetime(df["Deadline"]).dt.date
-                if "Link_File" not in df.columns:
-                    df["Link_File"] = "-"
                 return df
         except Exception:
             pass
     
-    # Session state sebagai data cadangan jika GSheets belum terhubung
+    # Session state cadangan jika mode lokal
     if "local_deadlines" not in st.session_state:
         st.session_state.local_deadlines = pd.DataFrame([
-            {"Tugas": "Laporan Praktikum AI", "Matkul": "Kecerdasan Buatan", "Deadline": date(2026, 9, 6), "Link_File": "-"},
-            {"Tugas": "Desain Wireframe UI/UX", "Matkul": "Interaksi Manusia & Komputer", "Deadline": date(2026, 9, 12), "Link_File": "-"}
+            {"Tugas": "Laporan Praktikum AI", "Matkul": "Kecerdasan Buatan", "Deadline": date(2026, 9, 6)},
+            {"Tugas": "Desain Wireframe UI/UX", "Matkul": "Interaksi Manusia & Komputer", "Deadline": date(2026, 9, 12)}
         ])
-    if "Link_File" not in st.session_state.local_deadlines.columns:
-        st.session_state.local_deadlines["Link_File"] = "-"
-        
     return st.session_state.local_deadlines
 
 df_deadlines = load_data()
@@ -215,7 +202,7 @@ if page == "Dashboard & Deadline":
 
     col_input, col_display = st.columns([1, 1.4])
 
-    # Form Input Tugas
+    # Form Input Tugas Baru (Bersih tanpa upload file)
     with col_input:
         st.subheader("➕ Tambah Deadline Baru")
         with st.form(key="form_add_task", clear_on_submit=True):
@@ -223,30 +210,13 @@ if page == "Dashboard & Deadline":
             nama_matkul = st.text_input("Nama Mata Kuliah", placeholder="Contoh: Keamanan Informasi")
             tanggal_deadline = st.date_input("Tanggal Deadline", value=date.today(), min_value=date.today())
             
-            # FITUR BARU: Uploader Berkas
-            uploaded_file = st.file_uploader("Upload Berkas/Soal Tugas (Opsional)", type=["pdf", "docx", "png", "jpg", "zip"])
-            
             submit_btn = st.form_submit_button(label="📌 Simpan Tugas", use_container_width=True)
 
             if submit_btn:
                 if not nama_tugas.strip() or not nama_matkul.strip():
                     st.error("⚠️ Nama tugas dan mata kuliah wajib diisi!")
                 else:
-                    link_file = "-"
-                    if uploaded_file is not None:
-                        with st.spinner("Mengunggah berkas ke Google Drive..."):
-                            drive_link = upload_to_drive(uploaded_file)
-                            if drive_link:
-                                link_file = drive_link
-                            else:
-                                link_file = f"Uploaded: {uploaded_file.name}"
-
-                    new_row = pd.DataFrame([{
-                        "Tugas": nama_tugas, 
-                        "Matkul": nama_matkul, 
-                        "Deadline": tanggal_deadline,
-                        "Link_File": link_file
-                    }])
+                    new_row = pd.DataFrame([{"Tugas": nama_tugas, "Matkul": nama_matkul, "Deadline": tanggal_deadline}])
                     
                     if conn:
                         updated_df = pd.concat([df_deadlines, new_row], ignore_index=True)
@@ -258,7 +228,7 @@ if page == "Dashboard & Deadline":
                     st.success(f"✅ Tugas '{nama_tugas}' berhasil disimpan!")
                     st.rerun()
 
-    # Daftar Kartu Deadline
+    # Daftar Kartu Deadline + Fitur Upload Hasil Pekerjaan
     with col_display:
         st.subheader("📋 Daftar Deadline Terdekat")
         if df_deadlines.empty:
@@ -277,14 +247,7 @@ if page == "Dashboard & Deadline":
                     badge_class = "badge-normal"
                     status_label = "Segera"
 
-                # Cek jika ada link berkas
-                link_html = ""
-                if pd.notna(row.get('Link_File')) and str(row['Link_File']) != "-":
-                    if str(row['Link_File']).startswith("http"):
-                        link_html = f" | 📎 <a href='{row['Link_File']}' target='_blank' class='file-link'>Lihat Berkas</a>"
-                    else:
-                        link_html = f" | 📎 <i>{row['Link_File']}</i>"
-
+                # Tampilan Kartu Tugas
                 st.markdown(f"""
                 <div class="dashboard-card">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -292,20 +255,39 @@ if page == "Dashboard & Deadline":
                         <span class="{badge_class}">{sisa_hari} Hari Lagi ({status_label})</span>
                     </div>
                     <p style="margin: 6px 0 0 0; color: #64748B; font-size: 0.9rem;">
-                        📚 <b>{row['Matkul']}</b> | Tenggat: {row['Deadline'].strftime('%d %B %Y')}{link_html}
+                        📚 <b>{row['Matkul']}</b> | Tenggat: {row['Deadline'].strftime('%d %B %Y')}
                     </p>
                 </div>
                 """, unsafe_allow_html=True)
 
-                if st.button(f"✔️ Tandai Selesai", key=f"btn_{index}"):
-                    updated_df = sorted_df.drop(index).reset_index(drop=True)
-                    if conn:
-                        updated_df["Deadline"] = updated_df["Deadline"].astype(str)
-                        conn.update(worksheet="Sheet1", data=updated_df)
-                    else:
-                        st.session_state.local_deadlines = updated_df
-                    st.success(f"Tugas '{row['Tugas']}' selesai!")
-                    st.rerun()
+                # Popover Form Pengumpulan Hasil Tugas
+                with st.popover(f"✔️ Selesaikan Task '{row['Tugas']}'", use_container_width=True):
+                    st.markdown("#### 📤 Pengumpulan Hasil Tugas")
+                    st.write("Upload file pengerjaan tugas kamu (PDF, DOCX, ZIP, Gambar) untuk menandai tugas ini selesai:")
+                    
+                    uploaded_hasil = st.file_uploader(
+                        "Pilih Berkas Hasil Tugas", 
+                        type=["pdf", "docx", "png", "jpg", "zip", "rar", "pptx"], 
+                        key=f"file_{index}"
+                    )
+                    
+                    if st.button("🚀 Kirim & Mark as Done", key=f"btn_finish_{index}", type="primary"):
+                        if uploaded_hasil is None:
+                            st.warning("⚠️ Harap upload file hasil tugas terlebih dahulu!")
+                        else:
+                            with st.spinner("Mengunggah hasil tugas ke Google Drive..."):
+                                drive_link = upload_to_drive(uploaded_hasil)
+                            
+                            # Hapus tugas dari daftar tugas aktif di Google Sheets
+                            updated_df = sorted_df.drop(index).reset_index(drop=True)
+                            if conn:
+                                updated_df["Deadline"] = updated_df["Deadline"].astype(str)
+                                conn.update(worksheet="Sheet1", data=updated_df)
+                            else:
+                                st.session_state.local_deadlines = updated_df
+                            
+                            st.success(f"🎉 Selamat! Tugas '{row['Tugas']}' selesai dan berkas berhasil disimpan di Google Drive!")
+                            st.rerun()
 
 # --- HALAMAN 2: ARSIP MATA KULIAH ---
 elif page == "Arsip Mata Kuliah":
