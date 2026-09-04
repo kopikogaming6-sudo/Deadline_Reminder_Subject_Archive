@@ -1,16 +1,18 @@
 import streamlit as st
 import pandas as pd
 from datetime import datetime, date
+from streamlit_gsheets import GSheetsConnection
+import google.generativeai as genai
 
-# 1. Konfigurasi Halaman Web
+# 1. Konfigurasi Halaman
 st.set_page_config(
-    page_title="Deadline Reminder System",
+    page_title="Deadline Reminder & Subject Archive",
     page_icon="⏰",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# 2. Custom CSS untuk UI/UX Modern (Berdasarkan Desain Pertama)
+# 2. Custom CSS untuk UI/UX Modern
 st.markdown("""
     <style>
     .main-title {
@@ -56,130 +58,243 @@ st.markdown("""
         font-size: 0.78rem;
         font-weight: 600;
     }
+    .archive-box {
+        background: linear-gradient(135deg, #F8FAFC 0%, #EFF6FF 100%);
+        border: 1px solid #BFDBFE;
+        border-radius: 10px;
+        padding: 1rem;
+        margin-bottom: 1rem;
+    }
     </style>
 """, unsafe_allow_html=True)
 
-# 3. Inisialisasi Session State (Tempat Penyimpanan Data Input Pengguna)
-if 'deadlines' not in st.session_state:
-    # Contoh data awal (bisa diisi atau dikosongkan [])
-    st.session_state.deadlines = [
-        {"Tugas": "Laporan Praktikum AI", "Matkul": "Kecerdasan Buatan", "Deadline": date(2026, 9, 6)},
-        {"Tugas": "Desain Wireframe UI/UX", "Matkul": "Interaksi Manusia & Komputer", "Deadline": date(2026, 9, 12)}
+# 3. Inisialisasi Koneksi Google Sheets & Gemini AI
+try:
+    conn = st.connection("gsheets", type=GSheetsConnection)
+except Exception:
+    conn = None
+
+def load_data():
+    """Fungsi mengambil data dari Google Sheets dengan fallback ke memori lokal jika belum disetup"""
+    if conn is not None:
+        try:
+            df = conn.read(worksheet="Sheet1", ttl=0)
+            if not df.empty and "Tugas" in df.columns:
+                df["Deadline"] = pd.to_datetime(df["Deadline"]).dt.date
+                return df
+        except Exception:
+            pass
+    
+    # Session state sebagai data cadangan jika GSheets belum terhubung
+    if "local_deadlines" not in st.session_state:
+        st.session_state.local_deadlines = pd.DataFrame([
+            {"Tugas": "Laporan Praktikum AI", "Matkul": "Kecerdasan Buatan", "Deadline": date(2026, 9, 6)},
+            {"Tugas": "Desain Wireframe UI/UX", "Matkul": "Interaksi Manusia & Komputer", "Deadline": date(2026, 9, 12)}
+        ])
+    return st.session_state.local_deadlines
+
+df_deadlines = load_data()
+
+# Setup AI Gemini
+gemini_key = st.secrets.get("GEMINI_API_KEY")
+if gemini_key:
+    genai.configure(api_key=gemini_key)
+    gemini_model = genai.GenerativeModel("gemini-1.5-flash")
+else:
+    gemini_model = None
+
+# Chat Session State
+if "messages" not in st.session_state:
+    st.session_state.messages = [
+        {"role": "assistant", "content": "Halo! Saya **Academic Co-pilot**. Ada yang bisa dibantu terkait deadline tugas atau materi kuliahmu?"}
     ]
 
 # 4. Sidebar Navigasi
 with st.sidebar:
     st.image("https://cdn-icons-png.flaticon.com/512/2693/2693507.png", width=60)
     st.title("Menu Utama")
-    menu = st.radio("Pilih Halaman", ["Kelola Deadline", "Tabel Rekapitulasi"])
+    page = st.radio("Navigasi", ["Dashboard & Deadline", "Arsip Mata Kuliah", "🤖 AI Co-pilot", "Pengaturan"])
+    
     st.divider()
-    st.caption("Aplikasi Input & Pengingat Deadline")
+    if conn:
+        st.success("🟢 Google Sheets Terhubung", icon="📊")
+    else:
+        st.info("🟡 Mode Lokal (GSheets Belum Set)", icon="💾")
+        
+    if gemini_model:
+        st.success("🤖 Gemini AI Connected", icon="✅")
+    else:
+        st.warning("⚠️ Gemini API Belum Set", icon="🔑")
 
-# 5. Tampilan Utama
+# 5. Routing Tampilan Halaman
 
-if menu == "Kelola Deadline":
-    st.markdown('<div class="main-title">Deadline Reminder System</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-title">Masukkan tugas baru Anda dan pantau tenggat waktunya secara langsung.</div>', unsafe_allow_html=True)
+# --- HALAMAN 1: DASHBOARD & DEADLINE REMINDER ---
+if page == "Dashboard & Deadline":
+    st.markdown('<div class="main-title">Deadline Reminder & Subject Archive</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">Kelola tenggat waktu tugas secara terpusat dengan penyimpanan Google Sheets.</div>', unsafe_allow_html=True)
 
-    # Membagi Layar Menjadi 2 Kolom (Kiri: Form Input, Kanan: Daftar Tugas)
+    # Hitung Statistik
+    total_tugas = len(df_deadlines)
+    urgent_count = 0
+    if not df_deadlines.empty:
+        urgent_count = sum((df_deadlines["Deadline"] - date.today()).apply(lambda x: x.days <= 3))
+
+    # Ringkasan Metrik
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric(label="Total Tugas Aktif", value=total_tugas)
+    with col2:
+        st.metric(label="Mendesak (<3 Hari)", value=urgent_count, delta_color="inverse")
+    with col3:
+        st.metric(label="Arsip Mata Kuliah", value=4)
+    with col4:
+        st.metric(label="Status Database", value="Google Sheets" if conn else "Lokal")
+
+    st.divider()
+
     col_input, col_display = st.columns([1, 1.4])
 
-    # === A. FORM INPUT USER ===
+    # Form Input Tugas
     with col_input:
-        st.subheader("➕ Tambah Tugas Baru")
-        
-        # Form input dengan parameter clear_on_submit=True agar form otomatis bersih setelah dikirim
-        with st.form(key="form_input_deadline", clear_on_submit=True):
+        st.subheader("➕ Tambah Deadline Baru")
+        with st.form(key="form_add_task", clear_on_submit=True):
+            nama_tugas = st.text_input("Nama Tugas / Proyek", placeholder="Contoh: Laporan Keamanan Siber")
+            nama_matkul = st.text_input("Nama Mata Kuliah", placeholder="Contoh: Keamanan Informasi")
+            tanggal_deadline = st.date_input("Tanggal Deadline", value=date.today(), min_value=date.today())
             
-            # 1. Input Nama Tugas
-            nama_tugas = st.text_input(
-                "Nama Tugas / Proyek",
-                placeholder="Contoh: Makalah Etika Profesi"
-            )
-            
-            # 2. Input Nama Mata Kuliah
-            nama_matkul = st.text_input(
-                "Nama Mata Kuliah",
-                placeholder="Contoh: Pemrograman Web"
-            )
-            
-            # 3. Input Tanggal Deadline
-            tanggal_deadline = st.date_input(
-                "Tanggal Deadline",
-                value=date.today(),
-                min_value=date.today()
-            )
-            
-            # Tombol Simpan
-            submit_btn = st.form_submit_button(label="📌 Simpan Deadline", use_container_width=True)
+            submit_btn = st.form_submit_button(label="📌 Simpan Tugas", use_container_width=True)
 
-            # Validasi dan Logika Penyimpanan Data
             if submit_btn:
-                if not nama_tugas.strip():
-                    st.error("⚠️ Nama Tugas wajib diisi!")
-                elif not nama_matkul.strip():
-                    st.error("⚠️ Nama Mata Kuliah wajib diisi!")
+                if not nama_tugas.strip() or not nama_matkul.strip():
+                    st.error("⚠️ Semua kolom wajib diisi!")
                 else:
-                    # Menambahkan data baru ke session state
-                    st.session_state.deadlines.append({
-                        "Tugas": nama_tugas,
-                        "Matkul": nama_matkul,
-                        "Deadline": tanggal_deadline
-                    })
+                    new_row = pd.DataFrame([{"Tugas": nama_tugas, "Matkul": nama_matkul, "Deadline": tanggal_deadline}])
+                    
+                    if conn:
+                        updated_df = pd.concat([df_deadlines, new_row], ignore_index=True)
+                        updated_df["Deadline"] = updated_df["Deadline"].astype(str)
+                        conn.update(worksheet="Sheet1", data=updated_df)
+                    else:
+                        st.session_state.local_deadlines = pd.concat([st.session_state.local_deadlines, new_row], ignore_index=True)
+                        
                     st.success(f"✅ Tugas '{nama_tugas}' berhasil disimpan!")
                     st.rerun()
 
-    # === B. TAMPILAN CARD DEADLINE ===
+    # Daftar Kartu Deadline
     with col_display:
-        st.subheader("📋 Daftar Deadline Aktif")
-        
-        if len(st.session_state.deadlines) == 0:
-            st.info("Belum ada deadline yang ditambahkan. Gunakan formulir di sebelah kiri untuk menambah tugas.")
+        st.subheader("📋 Daftar Deadline Terdekat")
+        if df_deadlines.empty:
+            st.info("Belum ada tugas tersimpan.")
         else:
-            # Mengurutkan daftar tugas berdasarkan tanggal deadline terdekat
-            sorted_deadlines = sorted(st.session_state.deadlines, key=lambda x: x["Deadline"])
-            
-            for index, item in enumerate(sorted_deadlines):
-                # Hitung sisa hari
-                sisa_hari = (item["Deadline"] - date.today()).days
+            sorted_df = df_deadlines.sort_values(by="Deadline").reset_index(drop=True)
+            for index, row in sorted_df.iterrows():
+                sisa_hari = (row["Deadline"] - date.today()).days
                 
-                # Menentukan badge warna status berdasarkan selisih hari
+                badge_class = "badge-safe"
+                status_label = "Aman"
                 if sisa_hari <= 3:
                     badge_class = "badge-urgent"
                     status_label = "Mendesak"
                 elif sisa_hari <= 7:
                     badge_class = "badge-normal"
                     status_label = "Segera"
-                else:
-                    badge_class = "badge-safe"
-                    status_label = "Aman"
 
-                # Render Kartu Tampilan Custom
                 st.markdown(f"""
                 <div class="dashboard-card">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <h4 style="margin: 0; color: #0F172A;">{item['Tugas']}</h4>
+                        <h4 style="margin: 0; color: #0F172A;">{row['Tugas']}</h4>
                         <span class="{badge_class}">{sisa_hari} Hari Lagi ({status_label})</span>
                     </div>
                     <p style="margin: 6px 0 0 0; color: #64748B; font-size: 0.9rem;">
-                        📚 <b>{item['Matkul']}</b> | Tenggat: {item['Deadline'].strftime('%d %B %Y')}
+                        📚 <b>{row['Matkul']}</b> | Tenggat: {row['Deadline'].strftime('%d %B %Y')}
                     </p>
                 </div>
                 """, unsafe_allow_html=True)
-                
-                # Tombol Selesai untuk Menghapus Tugas
-                if st.button(f"✔️ Tandai Selesai ({item['Tugas']})", key=f"btn_{index}"):
-                    st.session_state.deadlines.remove(item)
-                    st.success(f"Tugas '{item['Tugas']}' selesai!")
+
+                if st.button(f"✔️ Tandai Selesai", key=f"btn_{index}"):
+                    updated_df = sorted_df.drop(index).reset_index(drop=True)
+                    if conn:
+                        updated_df["Deadline"] = updated_df["Deadline"].astype(str)
+                        conn.update(worksheet="Sheet1", data=updated_df)
+                    else:
+                        st.session_state.local_deadlines = updated_df
+                    st.success(f"Tugas '{row['Tugas']}' selesai!")
                     st.rerun()
 
-elif menu == "Tabel Rekapitulasi":
-    st.markdown('<div class="main-title">📊 Tabel Rekapitulasi</div>', unsafe_allow_html=True)
-    st.markdown('<div class="sub-title">Ringkasan seluruh tugas dalam bentuk tabel interaktif.</div>', unsafe_allow_html=True)
+# --- HALAMAN 2: ARSIP MATA KULIAH ---
+elif page == "Arsip Mata Kuliah":
+    st.markdown('<div class="main-title">📚 Subject Archive</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">Penyimpanan modul, catatan, dan berkas kuliah terorganisir.</div>', unsafe_allow_html=True)
 
-    if len(st.session_state.deadlines) > 0:
-        df = pd.DataFrame(st.session_state.deadlines)
-        df["Deadline"] = df["Deadline"].apply(lambda x: x.strftime('%d %B %Y'))
-        st.dataframe(df, use_container_width=True)
-    else:
-        st.info("Tidak ada data untuk ditampilkan.")
+    st.text_input("🔍 Cari arsip modul atau materi...", placeholder="Ketik nama mata kuliah...")
+    
+    col_a, col_b = st.columns(2)
+    subjects = [
+        {"code": "IF301", "name": "Kecerdasan Buatan", "files": 12, "updated": "2 hari lalu"},
+        {"code": "IF302", "name": "Interaksi Manusia & Komputer", "files": 8, "updated": "Kemarin"},
+        {"code": "IF303", "name": "Pemrograman Web Lanjut", "files": 15, "updated": "5 hari lalu"},
+        {"code": "IF304", "name": "Basis Data Terdistribusi", "files": 6, "updated": "1 minggu lalu"}
+    ]
+
+    for index, sub in enumerate(subjects):
+        target_col = col_a if index % 2 == 0 else col_b
+        with target_col:
+            st.markdown(f"""
+            <div class="archive-box">
+                <span style="font-size: 0.8rem; font-weight: 700; color: #2563EB;">{sub['code']}</span>
+                <h3 style="margin: 0.2rem 0; color: #1E293B;">{sub['name']}</h3>
+                <p style="color: #64748B; font-size: 0.85rem; margin-bottom: 0.8rem;">
+                    📂 {sub['files']} Berkas Tersimpan • Diperbarui {sub['updated']}
+                </p>
+            </div>
+            """, unsafe_allow_html=True)
+            st.button(f"Buka Folder {sub['code']}", key=sub['code'])
+
+# --- HALAMAN 3: AI CO-PILOT ---
+elif page == "🤖 AI Co-pilot":
+    st.markdown('<div class="main-title">🤖 Academic AI Co-pilot</div>', unsafe_allow_html=True)
+    st.markdown('<div class="sub-title">AI membaca data tugas dari Google Sheets untuk memberikan saran prioritas belajar.</div>', unsafe_allow_html=True)
+
+    for msg in st.session_state.messages:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+
+    if prompt := st.chat_input("Tanyakan sesuatu (Contoh: 'Buatkan jadwal belajar untuk tugas mendesakku')"):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.markdown(prompt)
+
+        with st.chat_message("assistant"):
+            if gemini_model:
+                # Menyiapkan konteks otomatis dari database Google Sheets
+                if not df_deadlines.empty:
+                    context_list = [f"- {r['Tugas']} (Matkul: {r['Matkul']}, Deadline: {r['Deadline']})" for _, r in df_deadlines.iterrows()]
+                    context_str = "\n".join(context_list)
+                else:
+                    context_str = "Tidak ada tugas aktif saat ini."
+
+                full_prompt = f"""
+                Kamu adalah Academic Co-pilot untuk mahasiswa.
+                Daftar tugas aktif mahasiswa saat ini yang diambil dari database:
+                {context_str}
+
+                Pertanyaan Pengguna: {prompt}
+                Jawab dengan ringkas, membantu, terstruktur, dan gunakan penanda bold jika perlu.
+                """
+                
+                try:
+                    response = gemini_model.generate_content(full_prompt)
+                    ai_reply = response.text
+                except Exception as e:
+                    ai_reply = f"Gagal menghubungkan ke AI: {str(e)}"
+            else:
+                ai_reply = "API Key Gemini belum dikonfigurasi pada `secrets.toml`."
+
+            st.markdown(ai_reply)
+            st.session_state.messages.append({"role": "assistant", "content": ai_reply})
+
+# --- HALAMAN 4: PENGATURAN ---
+elif page == "Pengaturan":
+    st.markdown('<div class="main-title">⚙️ Pengaturan Aplikasi</div>', unsafe_allow_html=True)
+    st.toggle("Aktifkan Notifikasi Email", value=True)
+    st.toggle("Auto-sync ke Google Sheets", value=True)
