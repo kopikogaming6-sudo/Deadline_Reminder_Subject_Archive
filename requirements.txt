@@ -1,6 +1,6 @@
-streamlit>=1.33.0
-pandas>=2.0.0
-st-gsheets-connection>=0.0.3
-google-generativeai>=0.4.0
-google-api-python-client>=2.0.0
-google-auth>=2.0.0
+streamlit>=1.63.0
+pandas>=3.0.5
+st-gsheets-connection>=0.1.0
+google-generativeai>=0.8.6
+google-api-python-client>=2.200.0
+google-auth>=2.57.0
